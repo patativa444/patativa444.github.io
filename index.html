@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Wake PC Toggle</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+           text-align: center; margin: 8vh 6vw; color: #222; background:#fff; }
+    h1 { font-size: 22px; margin-bottom: 18px; }
+    #btn { font-size: 24px; padding: 18px 36px; border-radius: 14px; border: 0; cursor: pointer; }
+    #msg { margin-top: 14px; font-size: 14px; color: #666; min-height: 1.5em; }
+  </style>
+</head>
+<body>
+  <h1>Wake PC</h1>
+  <button id="btn">Loading…</button>
+  <div id="msg"></div>
+
+  <script>
+  // ====== EDIT THESE THREE ONLY ======
+  const FLAG_RAW_URL  = "https://gist.githubusercontent.com/patativa444/348b9500d9c086676df75e1aa3465f4a/raw/865d6a5f2c45104d9255367ee675bfdc70bdf06a/patativa_wakeflag.json";
+  const FLAG_GIST_API = "https://api.github.com/gists/348b9500d9c086676df75e1aa3465f4a";
+  const GIST_TOKEN    = "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"; // classic token with 'gist' scope
+  // ===================================
+
+  (function () {
+    const btn = document.getElementById("btn");
+    const msg = document.getElementById("msg");
+    let wakeValue = 0;
+
+    async function loadFlag() {
+      msg.textContent = "";
+      try {
+        // cache-buster to avoid stale caches
+        const res = await fetch(FLAG_RAW_URL + "?t=" + Date.now(), { cache: "no-store" });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const data = await res.json();
+        wakeValue = (data && typeof data.wake === "number") ? data.wake : 0;
+        renderButton();
+      } catch (e) {
+        btn.disabled = true;
+        msg.textContent = "Failed to load flag. Check RAW URL.";
+        console.error(e);
+      }
+    }
+
+    function renderButton() {
+      btn.disabled = false;
+      btn.textContent = wakeValue ? "Turn OFF" : "Turn ON";
+      btn.style.background = wakeValue ? "#ff8c8c" : "#7cf58e";
+    }
+
+    btn.onclick = async () => {
+      btn.disabled = true;
+      msg.textContent = "Updating…";
+
+      // Flip local state for snappy UX
+      wakeValue = wakeValue ? 0 : 1;
+      renderButton();
+
+      try {
+        // IMPORTANT: This filename MUST match the file in your JSON Gist
+        const body = { files: { "patativa_wakeflag.json": { content: JSON.stringify({ wake: wakeValue }) } } };
+
+        const res = await fetch(FLAG_GIST_API, {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `token ${GIST_TOKEN}`
+          },
+          body: JSON.stringify(body)
+        });
+
+        if (!res.ok) {
+          // roll back if save failed
+          wakeValue = wakeValue ? 0 : 1;
+          renderButton();
+          throw new Error("Save failed: HTTP " + res.status);
+        }
+
+        msg.textContent = "Saved!";
+        btn.disabled = false;
+      } catch (e) {
+        msg.textContent = "Failed to save. Check token & Gist ID.";
+        btn.disabled = false;
+        console.error(e);
+      }
+    };
+
+    loadFlag();
+  })();
+  </script>
+</body>
+</html>
