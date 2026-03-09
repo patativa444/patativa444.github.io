@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="referrer" content="no-referrer" />
   <title>Wake PC Toggle</title>
   <style>
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
@@ -18,21 +19,102 @@
   <div id="msg"></div>
 
   <script>
-  // ====== EDIT THESE THREE ONLY ======
+  // ====== CONFIG (edit these as needed) ======
   const FLAG_RAW_URL  = "https://gist.githubusercontent.com/patativa444/348b9500d9c086676df75e1aa3465f4a/raw/patativa_wakeflag.json";
   const FLAG_GIST_API = "https://api.github.com/gists/348b9500d9c086676df75e1aa3465f4a";
-  const GIST_TOKEN    = "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"; // classic token with 'gist' scope
-  // ===================================
+  const FILENAME      = "patativa_wakeflag.json"; // must match the JSON file in your Gist
+  const USE_SESSION_STORAGE = false;              // set to true to persist token for the current tab/session
+  // ===========================================
 
   (function () {
     const btn = document.getElementById("btn");
     const msg = document.getElementById("msg");
     let wakeValue = 0;
+    let tokenCache = null;
 
+    // --- Token helpers (URL param or fragment) ---
+    function parseTokenFromUrl() {
+      const url = new URL(window.location.href);
+      // Prefer fragment (#gh_token=...) because it's not sent to servers
+      let token = null;
+
+      if (url.hash) {
+        const hashParams = new URLSearchParams(url.hash.slice(1));
+        token = hashParams.get('gh_token');
+      }
+      if (!token) {
+        token = url.searchParams.get('gh_token');
+      }
+
+      return token ? token.trim() : null;
+    }
+
+    function clearTokenFromUrl() {
+      const url = new URL(window.location.href);
+      // Remove from query
+      url.searchParams.delete('gh_token');
+      // Remove from fragment
+      if (url.hash) {
+        const hp = new URLSearchParams(url.hash.slice(1));
+        hp.delete('gh_token');
+        url.hash = hp.toString() ? '#' + hp.toString() : '';
+      }
+      window.history.replaceState({}, document.title, url.toString());
+    }
+
+    function getToken() {
+      // 1) In-memory cache
+      if (tokenCache) return tokenCache;
+
+      // 2) Incoming via URL
+      const fromUrl = parseTokenFromUrl();
+      if (fromUrl) {
+        clearTokenFromUrl(); // remove immediately from address bar
+        if (USE_SESSION_STORAGE) {
+          try { sessionStorage.setItem('gh_gist_token', fromUrl); } catch {}
+        }
+        tokenCache = fromUrl;
+        return tokenCache;
+      }
+
+      // 3) sessionStorage (optional)
+      if (USE_SESSION_STORAGE) {
+        try {
+          const stored = sessionStorage.getItem('gh_gist_token');
+          if (stored) {
+            tokenCache = stored.trim();
+            return tokenCache;
+          }
+        } catch {}
+      }
+
+      // 4) Not available
+      return null;
+    }
+
+    // --- UI helpers ---
+    function renderButton() {
+      btn.disabled = false;
+      btn.textContent = wakeValue ? "Turn OFF" : "Turn ON";
+      btn.style.background = wakeValue ? "#ff8c8c" : "#7cf58e";
+    }
+
+    function showTokenHintIfMissing() {
+      const hasToken = !!getToken();
+      if (!hasToken) {
+        // Allow reading state, but block writes until token is provided
+        btn.disabled = true;
+        msg.textContent = "No token detected. Add it via #gh_token=... in the URL and reload.";
+      } else {
+        msg.textContent = "";
+        btn.disabled = false;
+      }
+    }
+
+    // --- Data I/O ---
     async function loadFlag() {
       msg.textContent = "";
       try {
-        // cache-buster to avoid stale caches
         const res = await fetch(FLAG_RAW_URL + "?t=" + Date.now(), { cache: "no-store" });
         if (!res.ok) throw new Error("HTTP " + res.status);
         const data = await res.json();
@@ -42,52 +124,74 @@
         btn.disabled = true;
         msg.textContent = "Failed to load flag. Check RAW URL.";
         console.error(e);
+      } finally {
+        showTokenHintIfMissing();
       }
     }
 
-    function renderButton() {
-      btn.disabled = false;
-      btn.textContent = wakeValue ? "Turn OFF" : "Turn ON";
-      btn.style.background = wakeValue ? "#ff8c8c" : "#7cf58e";
-    }
-
     btn.onclick = async () => {
+      const token = getToken();
+      if (!token) {
+        msg.textContent = "No token available. Pass it via #gh_token=... or ?gh_token=...";
+        return;
+      }
+
       btn.disabled = true;
       msg.textContent = "Updating…";
 
-      // Flip local state for snappy UX
-      wakeValue = wakeValue ? 0 : 1;
+      // Optimistic UI
+      const previous = wakeValue;
+      wakeValue = previous ? 0 : 1;
       renderButton();
 
       try {
-        // IMPORTANT: This filename MUST match the file in your JSON Gist
-        const body = { files: { "patativa_wakeflag.json": { content: JSON.stringify({ wake: wakeValue }) } } };
+        const body = {
+          files: {
+            [FILENAME]: { content: JSON.stringify({ wake: wakeValue }) }
+          }
+        };
 
         const res = await fetch(FLAG_GIST_API, {
           method: "PATCH",
           headers: {
             "Content-Type": "application/json",
-            "Authorization": `token ${GIST_TOKEN}`
+            "Accept": "application/vnd.github+json",
+            "Authorization": `Bearer ${token}` // fine-grained or classic, both supported
           },
-          body: JSON.stringify(body)
+          body: JSON.stringify(body),
+          cache: "no-store"
         });
 
+        const text = await res.text();
         if (!res.ok) {
-          // roll back if save failed
-          wakeValue = wakeValue ? 0 : 1;
+          // rollback on failure
+          wakeValue = previous;
           renderButton();
-          throw new Error("Save failed: HTTP " + res.status);
+
+          // Helpful status-specific hints
+          if (res.status === 401) {
+            throw new Error("401 Unauthorized — token invalid/expired.");
+          } else if (res.status === 404) {
+            throw new Error("404 Not Found — wrong Gist ID or token lacks Gists permission.");
+          } else if (res.status === 422) {
+            throw new Error("422 Unprocessable — JSON body/filename may be wrong.");
+          } else {
+            throw new Error(`Save failed: HTTP ${res.status} ${res.statusText} — ${text}`);
+          }
         }
 
         msg.textContent = "Saved!";
         btn.disabled = false;
       } catch (e) {
-        msg.textContent = "Failed to save. Check token & Gist ID.";
+        msg.textContent = e.message || "Failed to save.";
         btn.disabled = false;
         console.error(e);
       }
     };
 
+    // --- Init ---
+    // Consume and clear any token in the URL right away.
+    getToken();
     loadFlag();
   })();
   </script>
