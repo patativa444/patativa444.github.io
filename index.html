@@ -335,10 +335,21 @@
 
   <!-- Register SW from root so it controls the whole origin -->
   <script>
-    if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("/sw.js").catch(console.error);
-    }
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').then((reg) => {
+      // Ask the browser to check for a new SW on each load/open
+      reg.update();
+  
+      // (Optional) auto-refresh this tab when a new SW takes control
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        // Avoid loops: only reload once per update cycle
+        if (!window.__reloadedAfterSWUpdate) {
+          window.__reloadedAfterSWUpdate = true;
+          window.location.reload();
+        }
+      });
+    }).catch(console.error);
+  }
   </script>
 </body>
-
 </html>
