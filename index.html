@@ -33,20 +33,22 @@
   </div>
 
   <script>
-  // ====== CONFIG ======
+  /** ====== CONFIG ====== */
   const GIST_ID  = "348b9500d9c086676df75e1aa3465f4a";
   const STAR_URL = `https://api.github.com/gists/${GIST_ID}/star`;
-  // =====================
-
+  
+  // Auto-refresh settings
+  const POLL_INTERVAL_MS = 5000;             // regular polling interval
+  const ERROR_BACKOFF_MS = 15000;            // wait longer after an error/401/429
+  /** ===================== */
+  
   (function () {
     const btn = document.getElementById("btn");
     const msg = document.getElementById("msg");
-    const resetLink = document.getElementById("resetToken");
-
     let isStarred = false;
     let tokenCache = null;
-
-    // --- Token handling: localStorage → URL (one-time) ---
+  
+    // ---- Token handling (URL once -> localStorage) ----
     function parseTokenFromUrl() {
       const url = new URL(window.location.href);
       let token = null;
@@ -57,7 +59,7 @@
       if (!token) token = url.searchParams.get('gh_token');
       return token ? token.trim() : null;
     }
-
+  
     function clearTokenFromUrl() {
       const url = new URL(window.location.href);
       url.searchParams.delete('gh_token');
@@ -68,11 +70,10 @@
       }
       window.history.replaceState({}, document.title, url.toString());
     }
-
+  
     function getToken() {
       if (tokenCache) return tokenCache;
-
-      // 1) Stored
+  
       try {
         const stored = localStorage.getItem('gh_gist_token');
         if (stored) {
@@ -80,8 +81,7 @@
           return tokenCache;
         }
       } catch {}
-
-      // 2) URL (one-time)
+  
       const fromUrl = parseTokenFromUrl();
       if (fromUrl) {
         try { localStorage.setItem('gh_gist_token', fromUrl); } catch {}
@@ -89,18 +89,11 @@
         clearTokenFromUrl();
         return tokenCache;
       }
-
+  
       return null;
     }
-
-    function resetToken() {
-      try { localStorage.removeItem('gh_gist_token'); } catch {}
-      tokenCache = null;
-      msg.textContent = "Token cleared. Reload with #gh_token=YOUR_TOKEN.";
-      btn.disabled = true;
-    }
-
-    // --- UI ---
+  
+    // ---- UI ----
     function renderButton() {
       btn.disabled = false;
       if (isStarred) {
@@ -111,7 +104,7 @@
         btn.style.background = "#ff8c8c";
       }
     }
-
+  
     function showTokenHintIfMissing() {
       const hasToken = !!getToken();
       if (!hasToken) {
@@ -122,10 +115,9 @@
         btn.disabled = false;
       }
     }
-
-    // --- API calls ---
-    async function getStarStatus() {
-      msg.textContent = "";
+  
+    // ---- Core API helpers ----
+    async function fetchStarStatus(signal) {
       const token = getToken();
       const headers = {
         "Accept": "application/vnd.github+json",
@@ -133,39 +125,24 @@
         "User-Agent": "wolpoll/1.0 (web)"
       };
       if (token) headers["Authorization"] = `Bearer ${token}`;
-
-      try {
-        const res = await fetch(STAR_URL + "?t=" + Date.now(), {
-          method: "GET",
-          headers,
-          cache: "no-store",
-        });
-        if (res.status === 204) {
-          isStarred = true;
-        } else if (res.status === 404) {
-          isStarred = false;
-        } else if (res.status === 401) {
-          isStarred = false;
-          msg.textContent = "401 Unauthorized — token invalid/expired or lacks Gist scope.";
-        } else {
-          isStarred = false;
-          msg.textContent = `Unexpected status: ${res.status} ${res.statusText}`;
-        }
-        renderButton();
-      } catch (e) {
-        btn.disabled = true;
-        msg.textContent = "Failed to query star status. Check connectivity.";
-        console.error(e);
-      } finally {
-        showTokenHintIfMissing();
-      }
+  
+      const res = await fetch(STAR_URL + "?t=" + Date.now(), {
+        method: "GET",
+        headers,
+        cache: "no-store",
+        signal
+      });
+      // 204 = starred; 404 = not starred
+      if (res.status === 204) return { ok: true, starred: true };
+      if (res.status === 404) return { ok: true, starred: false };
+      return { ok: false, status: res.status, statusText: res.statusText, text: await res.text().catch(()=>"") };
     }
-
+  
     async function starGist() {
       const token = getToken();
       if (!token) {
         msg.textContent = "No token available.";
-        return;
+        return false;
       }
       btn.disabled = true;
       msg.textContent = "Starring…";
@@ -184,6 +161,7 @@
           isStarred = true;
           renderButton();
           msg.textContent = "Starred!";
+          return true;
         } else if (res.status === 401) {
           msg.textContent = "401 Unauthorized — token invalid/expired or lacks scope.";
         } else if (res.status === 404) {
@@ -198,13 +176,14 @@
       } finally {
         btn.disabled = false;
       }
+      return false;
     }
-
+  
     async function unstarGist() {
       const token = getToken();
       if (!token) {
         msg.textContent = "No token available.";
-        return;
+        return false;
       }
       btn.disabled = true;
       msg.textContent = "Unstarring…";
@@ -223,12 +202,14 @@
           isStarred = false;
           renderButton();
           msg.textContent = "Unstarred!";
+          return true;
         } else if (res.status === 401) {
           msg.textContent = "401 Unauthorized — token invalid/expired or lacks scope.";
         } else if (res.status === 404) {
           isStarred = false;
           renderButton();
           msg.textContent = "Already unstarred (404).";
+          return true;
         } else {
           const text = await res.text();
           msg.textContent = `Failed to unstar: HTTP ${res.status} ${res.statusText} — ${text}`;
@@ -239,9 +220,81 @@
       } finally {
         btn.disabled = false;
       }
+      return false;
     }
-
-    // --- Events ---
+  
+    // ---- NEW: auto-refresh loop with pause/resume & backoff ----
+    let pollTimer = null;
+    let currentInterval = POLL_INTERVAL_MS;
+    let inFlightController = null;
+  
+    function clearPoll() {
+      if (pollTimer) {
+        clearTimeout(pollTimer);
+        pollTimer = null;
+      }
+      if (inFlightController) {
+        inFlightController.abort();
+        inFlightController = null;
+      }
+    }
+  
+    async function pollOnce() {
+      // Skip if we have no token, the page is hidden, or offline
+      if (!getToken() || document.hidden || !navigator.onLine) {
+        scheduleNextPoll(POLL_INTERVAL_MS);
+        return;
+      }
+  
+      inFlightController = new AbortController();
+      try {
+        const res = await fetchStarStatus(inFlightController.signal);
+        if (res.ok) {
+          // Reset interval after success
+          currentInterval = POLL_INTERVAL_MS;
+  
+          // Only update UI if the state changed
+          if (res.starred !== isStarred) {
+            isStarred = res.starred;
+            renderButton();
+            // Optional: message for debugging; keep empty for quiet UI
+            // msg.textContent = isStarred ? "Detected: Starred remotely" : "Detected: Unstarred remotely";
+          }
+        } else {
+          // Back off on 401 (bad token) or 429/5xx
+          const status = res.status || 0;
+          if (status === 401 || status === 429 || status >= 500) {
+            currentInterval = ERROR_BACKOFF_MS;
+          }
+          // Optionally surface the first error; keep UX quiet otherwise
+          // msg.textContent = `Polling issue: ${status} ${res.statusText || ""}`;
+        }
+      } catch (e) {
+        // Network or abort: back off a bit
+        currentInterval = ERROR_BACKOFF_MS;
+        // console.debug("poll error", e);
+      } finally {
+        inFlightController = null;
+        scheduleNextPoll(currentInterval);
+      }
+    }
+  
+    function scheduleNextPoll(ms) {
+      clearPoll();
+      pollTimer = setTimeout(pollOnce, ms);
+    }
+  
+    function startPolling() {
+      clearPoll();
+      currentInterval = POLL_INTERVAL_MS;
+      scheduleNextPoll(200); // quick first check
+    }
+  
+    function pausePolling() {
+      clearPoll();
+    }
+  
+    // ---- Events: button, visibility, network, focus ----
     btn.onclick = async () => {
       const token = getToken();
       if (!token) {
@@ -251,17 +304,32 @@
       const prev = isStarred;
       isStarred = !prev; // optimistic
       renderButton();
-      if (!prev) await starGist(); else await unstarGist();
+      if (!prev) {
+        await starGist();
+      } else {
+        await unstarGist();
+      }
+      // After a manual change, poll soon to reconcile with server truth
+      scheduleNextPoll(500);
     };
-
-    resetLink.onclick = (e) => {
-      e.preventDefault();
-      resetToken();
-    };
-
-    // --- Init ---
-    getToken();      // stores token from URL once, then clears it from the address bar
-    getStarStatus(); // reflect current star state
+  
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) {
+        pausePolling();
+      } else {
+        startPolling();
+      }
+    });
+  
+    window.addEventListener("focus", () => startPolling());
+    window.addEventListener("online", () => startPolling());
+    window.addEventListener("offline", () => pausePolling());
+  
+    // ---- Init ----
+    getToken();         // store token from URL (once) and clear it from address bar
+    renderButton();     // render initial UI
+    showTokenHintIfMissing();
+    startPolling();     // begin auto-refresh
   })();
   </script>
 
