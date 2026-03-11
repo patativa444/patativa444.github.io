@@ -1,49 +1,60 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <link rel="manifest" href="manifest.json">
-  <meta name="theme-color" content="#ffffff">  <meta charset="utf-8" />
+  <!-- PWA -->
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#ffffff">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="apple-touch-icon" href="/icon-192.png">
+
+  <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <meta name="referrer" content="no-referrer" />
   <title>Wake Patativa PC</title>
+
   <style>
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
            text-align: center; margin: 8vh 6vw; color: #222; background:#fff; }
     h1 { font-size: 22px; margin-bottom: 18px; }
     #btn { font-size: 24px; padding: 18px 36px; border-radius: 14px; border: 0; cursor: pointer; }
     #msg { margin-top: 14px; font-size: 14px; color: #666; min-height: 1.5em; }
+    #tools { margin-top: 22px; font-size: 13px; }
+    #tools a { color: #06c; text-decoration: none; }
+    #tools a:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
   <h1>Patativa PC</h1>
   <button id="btn">Loading…</button>
   <div id="msg"></div>
+  <div id="tools">
+    <a href="#" id="resetToken">Reset token</a>
+  </div>
 
   <script>
-  // ====== CONFIG (edit these as needed) ======
-  const GIST_ID       = "348b9500d9c086676df75e1aa3465f4a";
-  const STAR_URL      = `https://api.github.com/gists/${GIST_ID}/star`;
-  const USE_SESSION_STORAGE = false; // set to true to persist token for the current tab/session
-  // ===========================================
+  // ====== CONFIG ======
+  const GIST_ID  = "348b9500d9c086676df75e1aa3465f4a";
+  const STAR_URL = `https://api.github.com/gists/${GIST_ID}/star`;
+  // =====================
 
   (function () {
     const btn = document.getElementById("btn");
     const msg = document.getElementById("msg");
+    const resetLink = document.getElementById("resetToken");
+
     let isStarred = false;
     let tokenCache = null;
 
-    // --- Token helpers (URL param or fragment) ---
+    // --- Token handling: localStorage → URL (one-time) ---
     function parseTokenFromUrl() {
       const url = new URL(window.location.href);
       let token = null;
-
       if (url.hash) {
         const hashParams = new URLSearchParams(url.hash.slice(1));
         token = hashParams.get('gh_token');
       }
-      if (!token) {
-        token = url.searchParams.get('gh_token');
-      }
+      if (!token) token = url.searchParams.get('gh_token');
       return token ? token.trim() : null;
     }
 
@@ -61,30 +72,35 @@
     function getToken() {
       if (tokenCache) return tokenCache;
 
+      // 1) Stored
+      try {
+        const stored = localStorage.getItem('gh_gist_token');
+        if (stored) {
+          tokenCache = stored.trim();
+          return tokenCache;
+        }
+      } catch {}
+
+      // 2) URL (one-time)
       const fromUrl = parseTokenFromUrl();
       if (fromUrl) {
-        clearTokenFromUrl();
-        if (USE_SESSION_STORAGE) {
-          try { sessionStorage.setItem('gh_gist_token', fromUrl); } catch {}
-        }
+        try { localStorage.setItem('gh_gist_token', fromUrl); } catch {}
         tokenCache = fromUrl;
+        clearTokenFromUrl();
         return tokenCache;
-      }
-
-      if (USE_SESSION_STORAGE) {
-        try {
-          const stored = sessionStorage.getItem('gh_gist_token');
-          if (stored) {
-            tokenCache = stored.trim();
-            return tokenCache;
-          }
-        } catch {}
       }
 
       return null;
     }
 
-    // --- UI helpers ---
+    function resetToken() {
+      try { localStorage.removeItem('gh_gist_token'); } catch {}
+      tokenCache = null;
+      msg.textContent = "Token cleared. Reload with #gh_token=YOUR_TOKEN.";
+      btn.disabled = true;
+    }
+
+    // --- UI ---
     function renderButton() {
       btn.disabled = false;
       if (isStarred) {
@@ -100,7 +116,7 @@
       const hasToken = !!getToken();
       if (!hasToken) {
         btn.disabled = true;
-        msg.textContent = "No token detected. Add it via #gh_token=... in the URL and reload.";
+        msg.textContent = "No token saved. Open with #gh_token=YOUR_TOKEN once.";
       } else {
         msg.textContent = "";
         btn.disabled = false;
@@ -109,8 +125,6 @@
 
     // --- API calls ---
     async function getStarStatus() {
-      // GET /gists/:gist_id/star → 204 if starred, 404 if not
-      // We use fetch and inspect status explicitly.
       msg.textContent = "";
       const token = getToken();
       const headers = {
@@ -131,11 +145,9 @@
         } else if (res.status === 404) {
           isStarred = false;
         } else if (res.status === 401) {
-          // Not authorized → treat as unknown; require token
           isStarred = false;
-          msg.textContent = "401 Unauthorized — provide a valid token with Gists permission.";
+          msg.textContent = "401 Unauthorized — token invalid/expired or lacks Gist scope.";
         } else {
-          // Other statuses — keep disabled but show info
           isStarred = false;
           msg.textContent = `Unexpected status: ${res.status} ${res.statusText}`;
         }
@@ -152,7 +164,7 @@
     async function starGist() {
       const token = getToken();
       if (!token) {
-        msg.textContent = "No token available. Pass it via #gh_token=... or ?gh_token=...";
+        msg.textContent = "No token available.";
         return;
       }
       btn.disabled = true;
@@ -167,7 +179,6 @@
             "User-Agent": "wolpoll/1.0 (web)"
           },
           cache: "no-store"
-          // no body needed
         });
         if (res.status === 204) {
           isStarred = true;
@@ -176,7 +187,7 @@
         } else if (res.status === 401) {
           msg.textContent = "401 Unauthorized — token invalid/expired or lacks scope.";
         } else if (res.status === 404) {
-          msg.textContent = "404 Not Found — wrong Gist ID or token lacks Gists permission.";
+          msg.textContent = "404 Not Found — wrong Gist ID or token lacks access.";
         } else {
           const text = await res.text();
           msg.textContent = `Failed to star: HTTP ${res.status} ${res.statusText} — ${text}`;
@@ -192,7 +203,7 @@
     async function unstarGist() {
       const token = getToken();
       if (!token) {
-        msg.textContent = "No token available. Pass it via #gh_token=... or ?gh_token=...";
+        msg.textContent = "No token available.";
         return;
       }
       btn.disabled = true;
@@ -215,7 +226,6 @@
         } else if (res.status === 401) {
           msg.textContent = "401 Unauthorized — token invalid/expired or lacks scope.";
         } else if (res.status === 404) {
-          // Already unstarred or missing
           isStarred = false;
           renderButton();
           msg.textContent = "Already unstarred (404).";
@@ -235,36 +245,31 @@
     btn.onclick = async () => {
       const token = getToken();
       if (!token) {
-        msg.textContent = "No token available. Pass it via #gh_token=... or ?gh_token=...";
+        msg.textContent = "No token available.";
         return;
       }
-      // Optimistic UI
       const prev = isStarred;
-      isStarred = !prev;
+      isStarred = !prev; // optimistic
       renderButton();
-      if (!prev) {
-        // Going to starred
-        const before = Date.now();
-        await starGist();
-        // Optional: re-check to reflect server truth
-        // await getStarStatus();
-      } else {
-        // Going to unstarred
-        await unstarGist();
-        // Optional: re-check to reflect server truth
-        // await getStarStatus();
-      }
+      if (!prev) await starGist(); else await unstarGist();
+    };
+
+    resetLink.onclick = (e) => {
+      e.preventDefault();
+      resetToken();
     };
 
     // --- Init ---
-    getToken();      // consume/clear token from URL if present
-    getStarStatus(); // fetch current starred state
+    getToken();      // stores token from URL once, then clears it from the address bar
+    getStarStatus(); // reflect current star state
   })();
   </script>
+
+  <!-- Register SW from root so it controls the whole origin -->
   <script>
-  if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("/sw.js");
-  }
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js").catch(console.error);
+    }
   </script>
 </body>
 </html>
