@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <meta name="referrer" content="no-referrer" />
-  <title>Wake PC Star Toggle</title>
+  <title>Wake Patativa PC</title>
   <style>
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
            text-align: center; margin: 8vh 6vw; color: #222; background:#fff; }
@@ -14,7 +14,7 @@
   </style>
 </head>
 <body>
-  <h1>Wake PC (Star Toggle)</h1>
+  <h1>Patativa PC</h1>
   <button id="btn">Loading…</button>
   <div id="msg"></div>
 
@@ -87,11 +87,11 @@
     function renderButton() {
       btn.disabled = false;
       if (isStarred) {
-        btn.textContent = "Unstar";
-        btn.style.background = "#ff8c8c";
-      } else {
-        btn.textContent = "Star";
+        btn.textContent = "Awaking PC";
         btn.style.background = "#7cf58e";
+      } else {
+        btn.textContent = "Sending WOL Packet";
+        btn.style.background = "#ff8c8c";
       }
     }
 
