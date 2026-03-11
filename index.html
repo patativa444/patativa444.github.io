@@ -38,8 +38,8 @@
   const STAR_URL = `https://api.github.com/gists/${GIST_ID}/star`;
   
   // Auto-refresh settings
-  const POLL_INTERVAL_MS = 5000;             // regular polling interval
-  const ERROR_BACKOFF_MS = 15000;            // wait longer after an error/401/429
+  const POLL_INTERVAL_MS = 2000;             // regular polling interval
+  const ERROR_BACKOFF_MS = 16000;            // wait longer after an error/401/429
   /** ===================== */
   
   (function () {
@@ -340,4 +340,5 @@
     }
   </script>
 </body>
+
 </html>
